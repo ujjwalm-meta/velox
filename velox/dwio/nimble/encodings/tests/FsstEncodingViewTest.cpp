@@ -111,6 +111,25 @@ class FsstEncodingViewTest : public EncodingViewTest {
     return rebuilt;
   }
 
+  // The layout written before decoded lengths existed: no decoded lengths
+  // section and no flag in the compression type byte.
+  std::string rebuildWithoutDecodedLengths(const FsstSections& sections) {
+    std::string rebuilt{sections.prefix};
+    rebuilt.push_back(
+        static_cast<char>(
+            static_cast<uint8_t>(sections.compressionType) &
+            ~FsstEncoding::kDecodedLengthsFlag));
+    for (const auto section : {sections.symbolTable, sections.lengths}) {
+      char encodedSize[5];
+      char* cursor = encodedSize;
+      varint::writeVarint(static_cast<uint32_t>(section.size()), &cursor);
+      rebuilt.append(encodedSize, cursor);
+      rebuilt.append(section);
+    }
+    rebuilt.append(sections.blob);
+    return rebuilt;
+  }
+
   template <typename T>
   std::string encodeTrivialChild(std::span<const T> values) {
     Vector<T> input{pool_.get(), values.size()};
@@ -239,6 +258,20 @@ TEST_P(FsstEncodingViewTest, readsAcrossLazyChunkBoundaries) {
   expectReads<FsstEncoding>(values, positions, forceFsstOptions());
   expectReads<FsstEncoding>(
       values, positions, forceFsstOptions(), CompressionType::Lz4);
+}
+
+TEST_P(FsstEncodingViewTest, readsEncodingsWithoutDecodedLengths) {
+  std::vector<std::string> storage;
+  auto values = makeValues(storage, 2'051);
+  const std::vector<uint32_t> positions{
+      0, 1, 2, 1'022, 1'023, 1'024, 1'025, 2'047, 2'048, 2'050};
+  auto options = forceFsstOptions();
+  options.cacheEncodingView = cacheEncodingView();
+
+  const auto older =
+      rebuildWithoutDecodedLengths(splitFsst(encodeFsst(values)));
+  EXPECT_TRUE(FsstEncoding::decodedLengthsEncoding(older, {}).empty());
+  expectEncodedReads(older, values, positions, options);
 }
 
 TEST_P(FsstEncodingViewTest, decodedChunksUseMemoryPool) {
